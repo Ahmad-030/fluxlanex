@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:lottie/lottie.dart';
 import '../audio/audio_manager.dart';
 import '../utils/prefs_manager.dart';
 import 'game_screen.dart';
@@ -15,30 +17,60 @@ class MenuScreen extends StatefulWidget {
   State<MenuScreen> createState() => _MenuScreenState();
 }
 
-class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
+class _MenuScreenState extends State<MenuScreen>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   final AudioManager _audio = AudioManager();
   int _highScore = 0;
   bool _musicOn = true;
 
   late AnimationController _pulseCtrl;
 
+  // Double-back-to-exit
+  DateTime? _lastBackPress;
+
   @override
   void initState() {
     super.initState();
-    _pulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1800))
+    WidgetsBinding.instance.addObserver(this); // ← lifecycle observer
+    _pulseCtrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1800))
       ..repeat(reverse: true);
     _loadData();
+  }
+
+  // ── App lifecycle: stop music when app goes to background / is closed ──────
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        _audio.pauseMusic();
+        break;
+      case AppLifecycleState.resumed:
+        if (_musicOn) _audio.resumeMusic();
+        break;
+      case AppLifecycleState.inactive:
+        break;
+    }
   }
 
   Future<void> _loadData() async {
     final hs = await PrefsManager.getHighScore();
     final m = await PrefsManager.getMusicEnabled();
-    if (mounted) setState(() { _highScore = hs; _musicOn = m; });
+    if (mounted) {
+      setState(() {
+        _highScore = hs;
+        _musicOn = m;
+      });
+    }
     if (_musicOn && !_audio.isPlaying) await _audio.playMusic();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _pulseCtrl.dispose();
     super.dispose();
   }
@@ -48,96 +80,117 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
     setState(() => _musicOn = _audio.isMusicEnabled);
   }
 
+  // ── Double-back-to-exit logic ─────────────────────────────────────────────
+  Future<bool> _onWillPop() async {
+    final now = DateTime.now();
+    if (_lastBackPress == null ||
+        now.difference(_lastBackPress!) > const Duration(seconds: 2)) {
+      _lastBackPress = now;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Press back again to exit',
+            style: GoogleFonts.orbitron(fontSize: 13, color: Colors.white),
+          ),
+          backgroundColor: const Color(0xFF00B8D4),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+          shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          margin: const EdgeInsets.all(16),
+        ),
+      );
+      return false; // don't exit yet
+    }
+    // Second press within 2 s → exit app
+    await _audio.stopMusic();
+    SystemNavigator.pop();
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          // Background image
-          Image.asset(
-            'assets/images/menu_bg.png',
-            fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => _gradientBg(),
-          ),
+    return WillPopScope(
+      onWillPop: _onWillPop,
+      child: Scaffold(
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            // ── Background image (FIXED: gradient container behind image) ────
+            _buildBackground(),
 
-          // Overlay
-          Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Color(0xAABECFFF), // fixed
-                  Color(0xCCDEF0FF),
+            // ── Overlay (FIXED: valid 8-digit hex only) ───────────────────
+            Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Color(0xAADCEEFF), // ~67% tint
+                    Color(0xCCDEF0FF), // ~80% tint
+                  ],
+                ),
+              ),
+            ),
+
+            // ── Charging Lottie (top-right corner) ───────────────────────
+
+
+            // ── Main content ──────────────────────────────────────────────
+            SafeArea(
+              child: Column(
+                children: [
+                  const SizedBox(height: 40),
+                  _buildTitle(),
+                  const SizedBox(height: 12),
+                  _buildHighScore(),
+                  const Spacer(),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 40),
+                    child: Column(
+                      children: [
+                        _MenuButton(
+                          label: 'PLAY',
+                          icon: Icons.play_arrow_rounded,
+                          isPrimary: true,
+                          delay: 200,
+                          onTap: () =>
+                              _navigateTo(GameScreen(highScore: _highScore)),
+                        ),
+                        const SizedBox(height: 14),
+                        _MenuButton(
+                          label: 'SETTINGS',
+                          icon: Icons.settings_rounded,
+                          delay: 300,
+                          onTap: () =>
+                              _navigateTo(const SettingsScreen()),
+                        ),
+                        const SizedBox(height: 14),
+                        _MenuButton(
+                          label: 'ABOUT',
+                          icon: Icons.info_outline_rounded,
+                          delay: 400,
+                          onTap: () => _navigateTo(const AboutScreen()),
+                        ),
+                        const SizedBox(height: 14),
+                        _MenuButton(
+                          label: 'PRIVACY POLICY',
+                          icon: Icons.shield_outlined,
+                          delay: 500,
+                          onTap: () =>
+                              _navigateTo(const PrivacyScreen()),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  _buildMusicToggle(),
+                  const SizedBox(height: 28),
                 ],
               ),
             ),
-          ),
-
-          // Content
-          SafeArea(
-            child: Column(
-              children: [
-                const SizedBox(height: 40),
-
-                // Title
-                _buildTitle(),
-
-                const SizedBox(height: 12),
-
-                // High score
-                _buildHighScore(),
-
-                const Spacer(),
-
-                // Buttons
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 40),
-                  child: Column(
-                    children: [
-                      _MenuButton(
-                        label: 'PLAY',
-                        icon: Icons.play_arrow_rounded,
-                        isPrimary: true,
-                        delay: 200,
-                        onTap: () => _navigateTo(GameScreen(highScore: _highScore)),
-                      ),
-                      const SizedBox(height: 14),
-                      _MenuButton(
-                        label: 'SETTINGS',
-                        icon: Icons.settings_rounded,
-                        delay: 300,
-                        onTap: () => _navigateTo(const SettingsScreen()),
-                      ),
-                      const SizedBox(height: 14),
-                      _MenuButton(
-                        label: 'ABOUT',
-                        icon: Icons.info_outline_rounded,
-                        delay: 400,
-                        onTap: () => _navigateTo(const AboutScreen()),
-                      ),
-                      const SizedBox(height: 14),
-                      _MenuButton(
-                        label: 'PRIVACY POLICY',
-                        icon: Icons.shield_outlined,
-                        delay: 500,
-                        onTap: () => _navigateTo(const PrivacyScreen()),
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 28),
-
-                // Music toggle
-                _buildMusicToggle(),
-
-                const SizedBox(height: 28),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -145,6 +198,27 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
   void _navigateTo(Widget screen) {
     Navigator.push(context, MaterialPageRoute(builder: (_) => screen))
         .then((_) => _loadData());
+  }
+
+  /// Gradient container sits behind the image so if the PNG is missing
+  /// the gradient still shows (no black screen).
+  Widget _buildBackground() {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFFF0F9FF), Color(0xFFDEF0FF), Color(0xFFC8E8FF)],
+        ),
+      ),
+      child: Image.asset(
+        'assets/images/menu_bg.png',
+        fit: BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        errorBuilder: (_, __, ___) => const SizedBox.expand(),
+      ),
+    );
   }
 
   Widget _buildTitle() {
@@ -161,13 +235,32 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
                 color: Colors.white.withOpacity(0.9),
                 boxShadow: [
                   BoxShadow(
-                    color: const Color(0xFF00E5FF).withOpacity(glow),
+                    color: const Color(0xFF00E5FF),
                     blurRadius: 30,
                     spreadRadius: 4,
                   ),
                 ],
               ),
-              child: const Icon(Icons.bolt_rounded, size: 42, color: Color(0xFF00B8D4)),
+              child:  Positioned(
+                top: 48,
+                right: 16,
+                child: SizedBox(
+                  width: 64,
+                  height: 64,
+                  child: Lottie.asset(
+                    'assets/lottie/Charging.json',
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                ),
+              ),
+            )
+                .animate()
+                .fadeIn(duration: 600.ms)
+                .scale(
+              begin: const Offset(0.6, 0.6),
+              duration: 700.ms,
+              curve: Curves.elasticOut,
             ),
             const SizedBox(height: 12),
             Text(
@@ -198,7 +291,14 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
           ],
         );
       },
-    ).animate().fadeIn(duration: 700.ms).slideY(begin: -0.3, end: 0, duration: 700.ms, curve: Curves.easeOut);
+    )
+        .animate()
+        .fadeIn(duration: 700.ms)
+        .slideY(
+        begin: -0.3,
+        end: 0,
+        duration: 700.ms,
+        curve: Curves.easeOut);
   }
 
   Widget _buildHighScore() {
@@ -208,7 +308,8 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
       decoration: BoxDecoration(
         color: Colors.white.withOpacity(0.8),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFF00E5FF).withOpacity(0.4), width: 1.5),
+        border: Border.all(
+            color: const Color(0xFF00E5FF).withOpacity(0.4), width: 1.5),
         boxShadow: [
           BoxShadow(
             color: const Color(0xFF00E5FF).withOpacity(0.12),
@@ -219,7 +320,8 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.emoji_events_rounded, color: Color(0xFFFFB700), size: 18),
+          const Icon(Icons.emoji_events_rounded,
+              color: Color(0xFFFFB700), size: 18),
           const SizedBox(width: 8),
           Text(
             'BEST: $_highScore',
@@ -243,7 +345,9 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
           color: Colors.white.withOpacity(0.75),
           borderRadius: BorderRadius.circular(30),
           border: Border.all(
-            color: _musicOn ? const Color(0xFF00E5FF).withOpacity(0.5) : Colors.grey.withOpacity(0.3),
+            color: _musicOn
+                ? const Color(0xFF00E5FF).withOpacity(0.5)
+                : Colors.grey.withOpacity(0.3),
             width: 1.5,
           ),
         ),
@@ -252,7 +356,9 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
           children: [
             Icon(
               _musicOn ? Icons.music_note_rounded : Icons.music_off_rounded,
-              color: _musicOn ? const Color(0xFF00B8D4) : const Color(0xFFADB5BD),
+              color: _musicOn
+                  ? const Color(0xFF00B8D4)
+                  : const Color(0xFFADB5BD),
               size: 20,
             ),
             const SizedBox(width: 8),
@@ -261,7 +367,9 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
               style: GoogleFonts.orbitron(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: _musicOn ? const Color(0xFF00B8D4) : const Color(0xFFADB5BD),
+                color: _musicOn
+                    ? const Color(0xFF00B8D4)
+                    : const Color(0xFFADB5BD),
               ),
             ),
           ],
@@ -269,19 +377,9 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
       ),
     ).animate().fadeIn(delay: 600.ms, duration: 400.ms);
   }
-
-  Widget _gradientBg() {
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFFF0F9FF), Color(0xFFDEF0FF), Color(0xFFC8E8FF)],
-        ),
-      ),
-    );
-  }
 }
+
+// ── Menu button ────────────────────────────────────────────────────────────────
 
 class _MenuButton extends StatelessWidget {
   final String label;
@@ -309,8 +407,8 @@ class _MenuButton extends StatelessWidget {
         decoration: BoxDecoration(
           gradient: isPrimary
               ? const LinearGradient(
-                  colors: [Color(0xFF00E5FF), Color(0xFF00B8D4)],
-                )
+            colors: [Color(0xFF00E5FF), Color(0xFF00B8D4)],
+          )
               : null,
           color: isPrimary ? null : Colors.white.withOpacity(0.82),
           borderRadius: BorderRadius.circular(16),
@@ -333,15 +431,19 @@ class _MenuButton extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, size: 22,
-                color: isPrimary ? Colors.white : const Color(0xFF00B8D4)),
+            Icon(icon,
+                size: 22,
+                color:
+                isPrimary ? Colors.white : const Color(0xFF00B8D4)),
             const SizedBox(width: 10),
             Text(
               label,
               style: GoogleFonts.orbitron(
                 fontSize: 14,
                 fontWeight: FontWeight.w700,
-                color: isPrimary ? Colors.white : const Color(0xFF1A202C),
+                color: isPrimary
+                    ? Colors.white
+                    : const Color(0xFF1A202C),
                 letterSpacing: 1.2,
               ),
             ),
@@ -350,8 +452,13 @@ class _MenuButton extends StatelessWidget {
       ),
     )
         .animate()
-        .fadeIn(delay: Duration(milliseconds: delay), duration: 400.ms)
-        .slideX(begin: -0.08, end: 0,
-            delay: Duration(milliseconds: delay), duration: 400.ms, curve: Curves.easeOut);
+        .fadeIn(
+        delay: Duration(milliseconds: delay), duration: 400.ms)
+        .slideX(
+        begin: -0.08,
+        end: 0,
+        delay: Duration(milliseconds: delay),
+        duration: 400.ms,
+        curve: Curves.easeOut);
   }
 }

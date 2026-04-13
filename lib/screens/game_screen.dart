@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../audio/audio_manager.dart';
@@ -17,26 +18,50 @@ class GameScreen extends StatefulWidget {
   State<GameScreen> createState() => _GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
+class _GameScreenState extends State<GameScreen>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   late GameController _ctrl;
   late Ticker _ticker;
   final AudioManager _audio = AudioManager();
 
-  // Swipe tracking
   double _swipeStartX = 0;
-  double _swipeStartY = 0;
   static const double _swipeThreshold = 30.0;
 
-  // Tap flash feedback
   bool _leftFlash = false;
   bool _rightFlash = false;
+
+  // Layout guard: only call setup+startGame once per valid layout
+  bool _gameStarted = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // ← lifecycle observer
     _ctrl = GameController();
     _ticker = createTicker(_ctrl.tick);
     _ctrl.addListener(_onGameStateChange);
+  }
+
+  // ── App lifecycle: stop/resume music automatically ─────────────────────────
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+      // Pause the game AND the music so nothing runs in the background.
+        if (_ctrl.state == GameState.playing) {
+          _ctrl.pauseGame();
+        }
+        _audio.pauseMusic();
+        break;
+      case AppLifecycleState.resumed:
+      // Don't auto-resume — let the user press Resume from the pause overlay.
+        break;
+      case AppLifecycleState.inactive:
+        break;
+    }
   }
 
   void _onGameStateChange() {
@@ -63,16 +88,23 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     );
   }
 
+  /// FIX: Guard with [_gameStarted] so this is only called once after the
+  /// first valid layout (w > 0 && h > 0). Previously it was called every
+  /// frame rebuild via addPostFrameCallback, which could call setup() again
+  /// while the game was already playing and reset obstacles mid-run —
+  /// causing the "ghost obstacle" visible in the screenshot.
   void _startGame(double w, double h) {
-    if (_ctrl.state == GameState.idle) {
-      _ctrl.setup(w, h, widget.highScore);
-      _ctrl.startGame();
-      _ctrl.attachTicker(_ticker);
-      _audio.resumeMusic();
-    }
+    if (_gameStarted) return;
+    if (w <= 0 || h <= 0) return;
+    _gameStarted = true;
+    _ctrl.setup(w, h, widget.highScore);
+    _ctrl.startGame();
+    _ctrl.attachTicker(_ticker);
+    _audio.resumeMusic();
   }
 
   void _tapLeft() {
+    if (_ctrl.state != GameState.playing) return;
     _ctrl.moveLeft();
     setState(() => _leftFlash = true);
     Future.delayed(const Duration(milliseconds: 120), () {
@@ -81,6 +113,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   void _tapRight() {
+    if (_ctrl.state != GameState.playing) return;
     _ctrl.moveRight();
     setState(() => _rightFlash = true);
     Future.delayed(const Duration(milliseconds: 120), () {
@@ -90,6 +123,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _ticker.dispose();
     _ctrl.removeListener(_onGameStateChange);
     _ctrl.dispose();
@@ -106,13 +140,17 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
             final double w = constraints.maxWidth;
             final double h = constraints.maxHeight;
 
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              _startGame(w, h);
-            });
+            // FIX: Schedule setup in postFrameCallback so the layout is
+            // fully settled, but the guard ensures it only runs once.
+            if (!_gameStarted && w > 0 && h > 0) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                _startGame(w, h);
+              });
+            }
 
             return Stack(
               children: [
-                // Background gradient
+                // Background
                 Container(
                   decoration: const BoxDecoration(
                     gradient: LinearGradient(
@@ -123,22 +161,15 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                   ),
                 ),
 
-                // FIX: Single GestureDetector covers the full game area.
-                // Handles BOTH taps (left/right half) AND swipe gestures correctly.
+                // Input layer
                 GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  // --- SWIPE ---
-                  onPanStart: (details) {
-                    _swipeStartX = details.globalPosition.dx;
-                    _swipeStartY = details.globalPosition.dy;
+                  onPanStart: (d) {
+                    _swipeStartX = d.globalPosition.dx;
                   },
-                  onPanEnd: (details) {
-                    final double dx =
-                        details.velocity.pixelsPerSecond.dx;
-                    final double dy =
-                    details.velocity.pixelsPerSecond.dy.abs();
-                    // Only register as horizontal swipe if horizontal velocity
-                    // is dominant and exceeds threshold
+                  onPanEnd: (d) {
+                    final double dx = d.velocity.pixelsPerSecond.dx;
+                    final double dy = d.velocity.pixelsPerSecond.dy.abs();
                     if (dx.abs() > _swipeThreshold && dx.abs() > dy) {
                       if (dx < 0) {
                         _tapLeft();
@@ -147,11 +178,9 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                       }
                     }
                   },
-                  // --- TAP (left/right half) ---
-                  onTapUp: (details) {
+                  onTapUp: (d) {
                     if (_ctrl.state != GameState.playing) return;
-                    final double tapX = details.localPosition.dx;
-                    if (tapX < w / 2) {
+                    if (d.localPosition.dx < w / 2) {
                       _tapLeft();
                     } else {
                       _tapRight();
@@ -165,7 +194,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                         painter: GamePainter(_ctrl),
                       ),
 
-                      // Visual tap feedback overlays
+                      // Tap flash overlays
                       Positioned.fill(
                         child: Row(
                           children: [
@@ -192,13 +221,13 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                   ),
                 ),
 
-                // HUD (on top, non-intercepting for taps below)
+                // HUD (non-intercepting)
                 IgnorePointer(
                   ignoring: true,
                   child: _buildHUD(),
                 ),
 
-                // Pause button (needs its own tap — not ignored)
+                // Pause button
                 Positioned(
                   top: 8,
                   left: 16,
@@ -213,7 +242,8 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                         color: Colors.white.withOpacity(0.8),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(
-                            color: const Color(0xFF00E5FF).withOpacity(0.3)),
+                            color:
+                            const Color(0xFF00E5FF).withOpacity(0.3)),
                       ),
                       child: const Icon(Icons.pause_rounded,
                           color: Color(0xFF00B8D4), size: 22),
@@ -248,18 +278,14 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
             end: Alignment.bottomCenter,
             colors: [
               Colors.white.withOpacity(0.9),
-              Colors.white.withOpacity(0.0)
+              Colors.white.withOpacity(0.0),
             ],
           ),
         ),
         child: Row(
           children: [
-            // Spacer to account for pause button
             const SizedBox(width: 52),
-
             const Spacer(),
-
-            // Score (center)
             Column(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
@@ -281,10 +307,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                 ),
               ],
             ),
-
             const Spacer(),
-
-            // Time (right)
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
@@ -319,8 +342,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       right: 0,
       child: Center(
         child: Container(
-          padding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           decoration: BoxDecoration(
             gradient: const LinearGradient(
                 colors: [Color(0xFF00E5FF), Color(0xFF00B8D4)]),
@@ -385,7 +407,10 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                 label: 'RESTART',
                 icon: Icons.refresh_rounded,
                 onTap: () {
+                  // Reset the start guard so setup() runs fresh dimensions
+                  _gameStarted = false;
                   _ctrl.startGame();
+                  _gameStarted = true;
                   _audio.resumeMusic();
                 },
               ),
@@ -411,6 +436,8 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 }
+
+// ── Pause button widget ────────────────────────────────────────────────────────
 
 class _PauseButton extends StatelessWidget {
   final String label;

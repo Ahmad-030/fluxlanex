@@ -59,33 +59,40 @@ class AboutScreen extends StatelessWidget {
                   child: Column(
                     children: [
                       // Logo & Lottie
-                      SizedBox(
-                        height: 140,
-                        child: Lottie.asset(
-                          'assets/lottie/Charging.json',
-                          repeat: true,
-                          errorBuilder: (_, __, ___) => Container(
-                            width: 100,
-                            height: 100,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Colors.white,
-                              boxShadow: [
-                                BoxShadow(
-                                  color: const Color(0xFF00E5FF).withOpacity(0.5),
-                                  blurRadius: 30,
-                                  spreadRadius: 4,
-                                ),
-                              ],
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.white.withOpacity(0.9),
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFF00E5FF),
+                              blurRadius: 30,
+                              spreadRadius: 4,
                             ),
-                            child: const Icon(Icons.bolt_rounded,
-                                size: 56, color: Color(0xFF00B8D4)),
+                          ],
+                        ),
+                        child:  Positioned(
+                          top: 48,
+                          right: 16,
+                          child: SizedBox(
+                            width: 64,
+                            height: 64,
+                            child: Lottie.asset(
+                              'assets/lottie/Charging.json',
+                              fit: BoxFit.contain,
+                              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                            ),
                           ),
                         ),
-                      ).animate().fadeIn(duration: 500.ms).scale(
-                          begin: const Offset(0.8, 0.8),
-                          duration: 600.ms,
-                          curve: Curves.easeOut),
+                      )
+                          .animate()
+                          .fadeIn(duration: 600.ms)
+                          .scale(
+                        begin: const Offset(0.6, 0.6),
+                        duration: 700.ms,
+                        curve: Curves.elasticOut,
+                      ),
 
                       const SizedBox(height: 8),
 
@@ -101,7 +108,7 @@ class AboutScreen extends StatelessWidget {
 
                       const SizedBox(height: 4),
                       Text(
-                        'REFLEX ARCADE v1.0.0',
+                        'REFLEX ARCADE',
                         style: GoogleFonts.orbitron(
                           fontSize: 11,
                           color: const Color(0xFF718096),
