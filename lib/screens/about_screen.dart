@@ -62,7 +62,7 @@ class AboutScreen extends StatelessWidget {
                       SizedBox(
                         height: 140,
                         child: Lottie.asset(
-                          'assets/lottie/game_idle.json',
+                          'assets/lottie/Charging.json',
                           repeat: true,
                           errorBuilder: (_, __, ___) => Container(
                             width: 100,

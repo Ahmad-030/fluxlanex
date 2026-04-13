@@ -63,7 +63,7 @@ class _GameOverScreenState extends State<GameOverScreen> {
                   SizedBox(
                     height: 160,
                     child: Lottie.asset(
-                      'assets/lottie/crash.json',
+                      'assets/lottie/ERROR.json',
                       repeat: false,
                       errorBuilder: (_, __, ___) => const Icon(
                         Icons.flash_on_rounded,
