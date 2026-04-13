@@ -71,7 +71,6 @@ class GameController extends ChangeNotifier {
     playerLane = GameConstants.startLane;
     playerTargetX = _laneCenter(playerLane);
     playerCurrentX = playerTargetX;
-    // Player sits at 78% down the screen
     playerY = gameHeight * 0.78;
   }
 
@@ -163,13 +162,17 @@ class GameController extends ChangeNotifier {
     }
 
     // Remove off-screen obstacles
-    obstacles.removeWhere((o) => o.y > gameHeight + 100);
+    obstacles.removeWhere((o) {
+      if (o.y > gameHeight + 100) {
+        o.active = false;
+        return true;
+      }
+      return false;
+    });
 
-    // Score: passed obstacles
+    // Mark passed: obstacle TOP has moved fully below player BOTTOM
     for (final obs in obstacles) {
-      // FIX: obstacle is "passed" only when its BOTTOM edge is fully below the player TOP edge
-      // This prevents scoring while obstacle is still beside the player
-      if (!obs.passed && (obs.y + obs.height) > (playerY + GameConstants.playerH + 10)) {
+      if (!obs.passed && obs.y > playerY + GameConstants.playerH) {
         obs.passed = true;
         score += GameConstants.scorePerObstacle;
       }
@@ -201,7 +204,7 @@ class GameController extends ChangeNotifier {
   }
 
   void _checkCollisions() {
-    // Player hitbox: centered on playerCurrentX, top at playerY
+    // Player hitbox (shrunk for forgiveness)
     final double shrink = GameConstants.hitBoxShrink / 2.0;
     final double px = playerCurrentX - GameConstants.playerW / 2.0 + shrink;
     final double py = playerY + shrink;
@@ -209,33 +212,48 @@ class GameController extends ChangeNotifier {
     final double ph = GameConstants.playerH - GameConstants.hitBoxShrink;
 
     for (final obs in obstacles) {
-      if (!obs.active) continue;
+      // Skip inactive or already-passed obstacles
+      if (!obs.active || obs.passed) continue;
 
-      // FIX: Only check collision when obstacle is actually overlapping the
-      // player's Y band. If obstacle has already passed below, skip entirely.
-      // This stops the "passing beside" false collision.
+      final double obsTop    = obs.y;
       final double obsBottom = obs.y + obs.height;
-      final double obsTop = obs.y;
 
-      // Obstacle must overlap player vertically
+      // No vertical overlap → safe
       if (obsBottom < py || obsTop > py + ph) continue;
 
-      final List<int> blockedLanes = obs.blockedLanes;
+      // ── Build ONE correct hitbox per obstacle, mirroring GamePainter exactly ──
+      //
+      // ROOT CAUSE of the flash-wall bug:
+      // The old code looped over blockedLanes and computed each lane's hitbox as:
+      //   ox = laneWidth * lane + laneWidth/2  - effectiveWidth/2
+      // For a flashWall spanning lanes 0+1 this produced TWO separate boxes each
+      // centred on an individual lane, not one box from the wall's left edge.
+      // That made the safe lane (lane 2) appear blocked, ending the game falsely.
+      //
+      // FIX: compute ox/ow the same way GamePainter._drawObstacle does, so
+      // collision rect == visual rect, always.
+      double ox;
+      double ow;
 
-      for (final lane in blockedLanes) {
-        final double obsCenterX = laneWidth * lane + laneWidth / 2.0;
-        // Use the pulse scale for pulse bars
-        final double effectiveWidth = obs.type == ObstacleType.pulseBar
-            ? obs.width * obs.pulseScale
-            : obs.width;
-        final double ox = obsCenterX - effectiveWidth / 2.0;
-        final double ow = effectiveWidth;
+      if (obs.type == ObstacleType.flashWall) {
+        // Painter: ox = lw * flashStartLane,  ow = lw * flashSpan
+        ox = laneWidth * obs.flashStartLane;
+        ow = laneWidth * obs.flashSpan;
+      } else if (obs.type == ObstacleType.pulseBar) {
+        // Painter: ow *= pulseScale,  ox = lw * lane + (lw - ow) / 2
+        ow = obs.width * obs.pulseScale;
+        ox = laneWidth * obs.lane + (laneWidth - ow) / 2.0;
+      } else {
+        // staticBlock / fluxBlock
+        // Painter: ox = lw * lane + (lw - obs.width) / 2
+        ow = obs.width;
+        ox = laneWidth * obs.lane + (laneWidth - ow) / 2.0;
+      }
 
-        if (_rectsOverlap(px, py, pw, ph, ox, obsTop, ow, obs.height)) {
-          particles.burst(Offset(playerCurrentX, playerY + ph / 2));
-          _endGame();
-          return;
-        }
+      if (_rectsOverlap(px, py, pw, ph, ox, obsTop, ow, obs.height)) {
+        particles.burst(Offset(playerCurrentX, playerY + ph / 2));
+        _endGame();
+        return;
       }
     }
   }
